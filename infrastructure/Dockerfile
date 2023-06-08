@@ -88,4 +88,4 @@ WORKDIR /root/
 
 CMD /usr/sbin/sshd -D
 
-LABEL org.opencontainers.image.source="https://github.com/pranavgade20/ARENA_2.0"
+LABEL org.opencontainers.image.source="https://github.com/atagade/ARENA_2.0"
