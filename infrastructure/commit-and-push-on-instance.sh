@@ -23,6 +23,6 @@ git clean -f
 git config --unset user.name
 git config --unset user.email
 echo "[user]
-        name = WMLB Account
-        email = 110868426+wmlb-account@users.noreply.github.com
+        name = ARENA Account
+        email = 110868426+arena-account@users.noreply.github.com
 " > ~/.gitconfig
