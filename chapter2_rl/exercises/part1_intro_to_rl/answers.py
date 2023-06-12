@@ -1,23 +1,40 @@
-# %%
+#%%
 import os
+import sys
 from typing import Optional, Union, List, Tuple
-import gym
-import gym.envs.registration
-import gym.spaces
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 import random
 from tqdm import tqdm
 import einops
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+!pip install gym==0.23.1
+!pip install pygame
+
+import gym
+import gym.envs.registration
+import gym.spaces
 
 Arr = np.ndarray
-MAIN = __name__ == "__main__"
 max_episode_steps = 1000
 N_RUNS = 200
 
-# %%
+# Make sure exercises are in the path
+chapter = r"chapter2_rl"
+exercises_dir = Path(f"{os.getcwd().split(chapter)[0]}/{chapter}/exercises").resolve()
+section_dir = exercises_dir / "part1_intro_to_rl"
+if str(exercises_dir) not in sys.path: sys.path.append(str(exercises_dir))
 
+import part1_intro_to_rl.utils as utils
+import part1_intro_to_rl.tests as tests
+from plotly_utils import imshow
+
+MAIN = __name__ == "__main__"
+
+# %%
 ObsType = int
 ActType = int
 
@@ -27,6 +44,7 @@ class MultiArmedBandit(gym.Env):
     num_arms: int
     stationary: bool
     arm_reward_means: np.ndarray
+    arm_star: int
 
     def __init__(self, num_arms=10, stationary=True):
         super().__init__()
@@ -69,17 +87,12 @@ class MultiArmedBandit(gym.Env):
         assert mode == "human", f"Mode {mode} not supported!"
         bandit_samples = []
         for arm in range(self.action_space.n):
-            bandit_samples.extend(np.random.normal(loc=self.arm_reward_means[arm], scale=1.0, size=1000))
-        return px.violin(
-            x=[n for _ in range(1000) for n in range(self.action_space.n)],
-            y=bandit_samples, 
-            labels={"x": "Bandit Arm", "y": "Reward Distribution"},
-            template="simple_white",
-            box=True, points=False
-        )
-
+            bandit_samples += [np.random.normal(loc=self.arm_reward_means[arm], scale=1.0, size=1000)]
+        plt.violinplot(bandit_samples, showmeans=True)
+        plt.xlabel("Bandit Arm")
+        plt.ylabel("Reward Distribution")
+        plt.show()
 # %%
-
 gym.envs.registration.register(
     id="ArmedBanditTestbed-v0",
     entry_point=MultiArmedBandit,
@@ -88,15 +101,16 @@ gym.envs.registration.register(
     reward_threshold=1.0,
     kwargs={"num_arms": 10, "stationary": True},
 )
-if MAIN:
-    env = gym.make("ArmedBanditTestbed-v0")
-    print("Our env inside its wrappers looks like: ", env)
 
+env = gym.make("ArmedBanditTestbed-v0")
+print(f"Our env inside its wrappers looks like: {env}")
 # %%
-
 class Agent:
-    '''Base class for agents in a multi-armed bandit environment (you do not need to add any implementation here)'''
+    '''
+    Base class for agents in a multi-armed bandit environment
 
+    (you do not need to add any implementation here)
+    '''
     rng: np.random.Generator
 
     def __init__(self, num_arms: int, seed: int):
@@ -112,6 +126,7 @@ class Agent:
     def reset(self, seed: int) -> None:
         self.rng = np.random.default_rng(seed)
 
+
 def run_episode(env: gym.Env, agent: Agent, seed: int):
 
     (rewards, was_best) = ([], [])
@@ -126,10 +141,11 @@ def run_episode(env: gym.Env, agent: Agent, seed: int):
         agent.observe(arm, reward, info)
         rewards.append(reward)
         was_best.append(1 if arm == info["best_arm"] else 0)
-    
+
     rewards = np.array(rewards, dtype=float)
     was_best = np.array(was_best, dtype=int)
     return (rewards, was_best)
+
 
 def run_agent(env: gym.Env, agent: Agent, n_runs=200, base_seed=1):
     all_rewards = []
@@ -142,169 +158,167 @@ def run_agent(env: gym.Env, agent: Agent, n_runs=200, base_seed=1):
         all_was_bests.append(corrects)
     return (np.array(all_rewards), np.array(all_was_bests))
 
+
 class RandomAgent(Agent):
-    
+
     def get_action(self) -> ActType:
-        return self.rng.integers(low=0, high=self.num_arms)
+        return self.rng.integers(0, self.num_arms)
 
     def __repr__(self):
+        # Useful when plotting multiple agents with `plot_rewards`
         return "RandomAgent"
 
-if MAIN:
-    num_arms = 10
-    stationary = True
-    env = gym.make("ArmedBanditTestbed-v0", num_arms=num_arms, stationary=stationary)
-    agent = RandomAgent(num_arms, 0)
-    all_rewards, all_corrects = run_agent(env, agent)
-    print(f"Expected correct freq: {1/10}, actual: {all_corrects.mean()}")
-    print(f"Average reward: {all_rewards.mean()}")
+
+num_arms = 10
+stationary = True
+env = gym.make("ArmedBanditTestbed-v0", num_arms=num_arms, stationary=stationary)
+agent = RandomAgent(num_arms, 0)
+all_rewards, all_corrects = run_agent(env, agent)
+
+print(f"Expected correct freq: {1/10}, actual: {all_corrects.mean():.6f}")
+assert np.isclose(all_corrects.mean(), 1/10, atol=0.05), "Random agent is not random enough!"
+
+print(f"Expected average reward: 0.0, actual: {all_rewards.mean():.6f}")
+assert np.isclose(all_rewards.mean(), 0, atol=0.05), "Random agent should be getting mean arm reward, which is zero."
+
+print("All tests passed!")
+
 
 # %%
 
-def moving_avg(a, n):
-    ret = np.cumsum(a, dtype=float)
-    ret[n:] = ret[n:] - ret[:-n]
-    return ret[n - 1:] / n
-
-def plot_rewards(
-    all_rewards: List[np.ndarray], 
-    names: List[str],
-    moving_avg_window: Optional[int] = 15,
-):
-    fig = go.Figure(layout=dict(template="simple_white", title_text="Mean reward over all runs"))
-    for rewards, name in zip(all_rewards, names):
-        rewards_avg = rewards.mean(axis=0)
-        if moving_avg_window is not None:
-            rewards_avg = moving_avg(rewards_avg, moving_avg_window)
-        fig.add_trace(go.Scatter(y=rewards_avg, mode="lines", name=name))
-    fig.show()
-
-
-
-
 class RewardAveraging(Agent):
     def __init__(self, num_arms: int, seed: int, epsilon: float, optimism: float):
+        self.num_arms = num_arms
         self.epsilon = epsilon
         self.optimism = optimism
-        super().__init__(num_arms, seed)
+        self.reset(seed)
+
 
     def get_action(self):
         if self.rng.random() < self.epsilon:
-            return self.rng.integers(low=0, high=self.num_arms).item()
+            return self.rng.integers(0, self.num_arms)
         else:
-            return np.argmax(self.Q)
-        
+            return np.argmax(self.average_rewards) 
+
     def observe(self, action, reward, info):
-        self.N[action] += 1
-        self.Q[action] += (reward - self.Q[action]) / self.N[action]
+        self.arm_num_samples[action] += 1
+        new_average = self.average_rewards[action] + 1 / self.arm_num_samples[action] * (reward - self.average_rewards[action])
+        
+        self.average_rewards[action] = new_average
 
     def reset(self, seed: int):
-        super().reset(seed)
-        self.N = np.zeros(self.num_arms)
-        self.Q = np.full(self.num_arms, self.optimism, dtype=float)
+        self.rng = np.random.default_rng(seed)
+        self.arm_num_samples = np.zeros(shape=(num_arms,))
+        self.average_rewards = np.ones(shape=(num_arms,)) * self.optimism
+
 
     def __repr__(self):
         # For the legend, when plotting
         return f"RewardAveraging(eps={self.epsilon}, optimism={self.optimism})"
 
-if MAIN:
-    num_arms = 10
-    stationary = True
-    names = []
-    all_rewards = []
-    env = gym.make("ArmedBanditTestbed-v0", num_arms=num_arms, stationary=stationary)
 
-    for optimism in [0, 5]:
-        agent = RewardAveraging(num_arms, 0, epsilon=0.1, optimism=optimism)
-        (rewards, num_correct) = run_agent(env, agent, n_runs=N_RUNS, base_seed=1)
-        names.append(str(agent))
-        all_rewards.append(rewards)
-        print(agent)
-        print(f" -> Frequency of correct arm: {num_correct.mean():.4f}")
-        print(f" -> Average reward: {rewards.mean():.4f}")
+num_arms = 10
+stationary = True
+names = []
+all_rewards = []
+env = gym.make("ArmedBanditTestbed-v0", num_arms=num_arms, stationary=stationary)
 
-    plot_rewards(all_rewards, names, moving_avg_window=15)
+for optimism in [0, 5]:
+    agent = RewardAveraging(num_arms, 0, epsilon=0.01, optimism=optimism)
+    (rewards, num_correct) = run_agent(env, agent, n_runs=N_RUNS, base_seed=1)
+    all_rewards.append(rewards)
+    names.append(str(agent))
+    print(agent)
+    print(f" -> Frequency of correct arm: {num_correct.mean():.4f}")
+    print(f" -> Average reward: {rewards.mean():.4f}")
 
+utils.plot_rewards(all_rewards, names, moving_avg_window=15)
 # %%
-
 class CheatyMcCheater(Agent):
     def __init__(self, num_arms: int, seed: int):
-        super().__init__(num_arms, seed)
+        self.num_arms = num_arms
         self.best_arm = 0
 
     def get_action(self):
         return self.best_arm
 
-    def observe(self, action, reward, info):
+    def observe(self, action: int, reward: float, info: dict):
         self.best_arm = info["best_arm"]
 
     def __repr__(self):
         return "Cheater"
 
-if MAIN:
-    cheater = CheatyMcCheater(num_arms, 0)
-    reward_averaging = RewardAveraging(num_arms, 0, epsilon=0.1, optimism=0)
-    random = RandomAgent(num_arms, 0)
 
-    names = []
-    all_rewards = []
 
-    for agent in [cheater, reward_averaging, random]:
-        (rewards, num_correct) = run_agent(env, agent, n_runs=N_RUNS, base_seed=1)
-        names.append(str(agent))
-        all_rewards.append(rewards)
+cheater = CheatyMcCheater(num_arms, 0)
+reward_averaging = RewardAveraging(num_arms, 0, epsilon=0.1, optimism=0)
+random = RandomAgent(num_arms, 0)
 
-    plot_rewards(all_rewards, names, moving_avg_window=15)
+names = []
+all_rewards = []
 
+for agent in [cheater, reward_averaging, random]:
+    (rewards, num_correct) = run_agent(env, agent, n_runs=N_RUNS, base_seed=1)
+    names.append(str(agent))
+    all_rewards.append(rewards)
+
+utils.plot_rewards(all_rewards, names, moving_avg_window=15)
+
+assert (all_rewards[0] < all_rewards[1]).mean() < 0.001, "Cheater should be better than reward averaging"
+print("Tests passed!")
 # %%
-
 class UCBActionSelection(Agent):
     def __init__(self, num_arms: int, seed: int, c: float, eps: float = 1e-6):
-        # SOLUTION
         self.c = c
+        self.num_arms = num_arms
         self.eps = eps
-        super().__init__(num_arms, seed)
+        self.reset(seed)
+        
 
     def get_action(self):
-        # SOLUTION
-        # This method avoids division by zero errors, and makes sure N=0 entries are chosen by argmax
-        ucb = self.Q + self.c * np.sqrt(np.log(self.t) / (self.N + self.eps))
-        return np.argmax(ucb)
+        Q = self.R/(self.N + self.eps)
+        UCB_vals = Q + self.c * np.sqrt(np.log(self.t)/ (self.N + self.eps))
+        return np.argmax(UCB_vals)
+
 
     def observe(self, action, reward, info):
-        # SOLUTION
         self.t += 1
         self.N[action] += 1
-        self.Q[action] += (reward - self.Q[action]) / self.N[action]
+        self.R[action] += reward
+        pass
 
     def reset(self, seed: int):
-        # SOLUTION
-        super().reset(seed)
+        self.rng = np.random.default_rng(seed)
         self.t = 1
-        self.N = np.zeros(self.num_arms)
-        self.Q = np.zeros(self.num_arms)
+        self.N = np.zeros(shape=(self.num_arms,))
+        self.R = np.zeros(shape=(self.num_arms,))
+
+
 
     def __repr__(self):
         return f"UCB(c={self.c})"
 
 
-if MAIN:
-    cheater = CheatyMcCheater(num_arms, 0)
-    reward_averaging = RewardAveraging(num_arms, 0, epsilon=0.1, optimism=0)
-    reward_averaging_optimism = RewardAveraging(num_arms, 0, epsilon=0.1, optimism=5)
-    ucb = UCBActionSelection(num_arms, 0, c=2.0)
-    random = RandomAgent(num_arms, 0)
 
-    names = []
-    all_rewards = []
+cheater = CheatyMcCheater(num_arms, 0)
+reward_averaging = RewardAveraging(num_arms, 0, epsilon=0.1, optimism=0)
+reward_averaging_optimism = RewardAveraging(num_arms, 0, epsilon=0.1, optimism=5)
+ucb = UCBActionSelection(num_arms, 0, c=2.0)
+random = RandomAgent(num_arms, 0)
 
-    for agent in [cheater, reward_averaging, reward_averaging_optimism, ucb, random]:
-        (rewards, num_correct) = run_agent(env, agent, n_runs=N_RUNS, base_seed=1)
-        names.append(str(agent))
-        all_rewards.append(rewards)
+names = []
+all_rewards = []
 
-    plot_rewards(all_rewards, names, moving_avg_window=15)
+for agent in [cheater, reward_averaging, reward_averaging_optimism, ucb, random]:
+    (rewards, num_correct) = run_agent(env, agent, n_runs=N_RUNS, base_seed=1)
+    names.append(str(agent))
+    all_rewards.append(rewards)
 
+utils.plot_rewards(all_rewards, names, moving_avg_window=15)
+
+
+
+#### Part 2
 # %%
 
 class Environment:
@@ -379,6 +393,7 @@ class Environment:
         return (out_s, out_r, out_p)
 
 
+# %%
 class Toy(Environment):
     def dynamics(self, state: int, action: int):
         (S0, SL, SR) = (0, 1, 2)
@@ -401,6 +416,28 @@ class Toy(Environment):
         super().__init__(num_states=3, num_actions=2)
 
 
+# %%
+toy = Toy()
+
+actions = ["a_L", "a_R"]
+states = ["S_0", "s_L", "S_R"]
+
+imshow(
+    toy.T, # dimensions (s, a, s_next)
+    title="Transition probabilities T(s_next | s, a) for toy environment", 
+    facet_col=-1, facet_labels=[f"s_next = {s}" for s in states], y=states, x=actions,
+    labels = {"x": "Action", "y": "State", "color": "Transition<br>Probability"},
+)
+
+imshow(
+    toy.R, # dimensions (s, a, s_next)
+    title="Rewards R(s, a, s_next) for toy environment", 
+    facet_col=-1, facet_labels=[f"s_next = {s}" for s in states], y=states, x=actions,
+    labels = {"x": "Action", "y": "State", "color": "Reward"},
+)
+
+
+# %%
 class Norvig(Environment):
     def dynamics(self, state: int, action: int) -> Tuple[Arr, Arr, Arr]:
         def state_index(state):
@@ -455,9 +492,10 @@ class Norvig(Environment):
         self.goal_rewards = np.array([1.0, -1])
         super().__init__(num_states, num_actions, start=8, terminal=terminal)
 
-# %%
 
-def policy_eval_numerical(env: Environment, pi: Arr, gamma=0.99, eps=1e-08, max_iterations=10_000) -> Arr:
+
+# %%
+def policy_eval_numerical(env: Environment, pi: Arr, gamma=0.99, eps=1e-8, max_iterations=10_000) -> Arr:
     '''
     Numerically evaluates the value of a given policy by iterating the Bellman equation
     Inputs:
@@ -465,75 +503,43 @@ def policy_eval_numerical(env: Environment, pi: Arr, gamma=0.99, eps=1e-08, max_
         pi : shape (num_states,) - The policy to evaluate
         gamma: float - Discount factor
         eps  : float - Tolerance
+        max_iterations: int - Maximum number of iterations to run
     Outputs:
         value : float (num_states,) - The value function for policy pi
     '''
-    # Indexing T into an array of shape (num_states, num_states)
-    states = np.arange(env.num_states)
-    actions = pi
-    transition_matrix = env.T[states, actions, :]
-    # Same thing with R
-    reward_matrix = env.R[states, actions, :]
-    
-    # Iterate until we get convergence
-    V = np.zeros_like(pi)
-    for i in range(max_iterations):
-        V_new = einops.einsum(transition_matrix, reward_matrix + gamma * V, "s s_prime, s s_prime -> s")
-        if np.abs(V - V_new).max() < eps:
-            print(f"Converged in {i} steps.")
-            return V_new
-        V = V_new
-    print(f"Failed to converge in {max_iterations} steps.")
-    return V
-
-# Alternate solution, which doesn't index at the start:
-
-def policy_eval_numerical_2(env : Environment, pi : Arr, gamma=0.99, eps=1e-8) -> Arr:
-    '''
-    Numerically evaluates the value of a given policy by iterating the Bellman equation
-    Inputs:
-        env: Environment
-        pi : shape (num_states,) - The policy to evaluate
-        gamma: float - Discount factor
-        eps  : float - Tolerance
-    Outputs:
-        value : float (num_states,) - The value function for policy pi
-    '''
-    num_states = env.num_states
-    T = env.T
-    R = env.R
-    delta = float("inf")
-    value = np.zeros((num_states,))  
-    
-    while delta > eps:
-        new_v = np.zeros_like(value)
-        idx = range(num_states)
-        for s in range(num_states):
-            new_v[s] = np.dot(T[s, pi[s]], (R[s, pi[s]] + gamma * value))
-        delta = np.abs(new_v - value).sum()
-        value = np.copy(new_v)
-    return value
+    value = np.zeros((env.num_states,))
+    for iter in range(max_iterations):
+        action_to_value = einops.einsum(env.T, env.R+gamma*value, "s_1 a s_2, s_1 a s_2 -> s_1 a")
+        new_value = np.empty((env.num_states,))
+        for state in range(env.num_states):
+            new_value[state] = action_to_value[state, pi[state]]
+        if np.max(np.abs(new_value - value)) < eps:
+            return new_value
+        value = new_value
+    print("Did not converge")
+    return new_value
 
 
+tests.test_policy_eval(policy_eval_numerical, exact=False)
 # %%
-
 def policy_eval_exact(env: Environment, pi: Arr, gamma=0.99) -> Arr:
     '''
     Finds the exact solution to the Bellman equation.
     '''
-    states = np.arange(env.num_states)
-    actions = pi
-    transition_matrix = env.T[states, actions, :]
-    reward_matrix = env.R[states, actions, :]
+    P = np.zeros((env.num_states, env.num_states))
+    R = np.zeros((env.num_states, env.num_states))
+    for state in range(env.num_states):
+        P[state] = env.T[state,pi[state],:]
+        R[state] = env.R[state,pi[state],:]
+    A = np.eye(env.num_states) - gamma * P
+    r = einops.einsum(P, R, "s_1 s_2, s_1 s_2 -> s_1")
+    return np.linalg.solve(A, r)
 
-    r = einops.einsum(transition_matrix, reward_matrix, "i j, i j -> i")
 
-    mat = np.eye(env.num_states) - gamma * transition_matrix
+tests.test_policy_eval(policy_eval_exact, exact=True)
 
-    return np.linalg.solve(mat, r)
 
 # %%
-
 def policy_improvement(env: Environment, V: Arr, gamma=0.99) -> Arr:
     '''
     Inputs:
@@ -542,23 +548,14 @@ def policy_improvement(env: Environment, V: Arr, gamma=0.99) -> Arr:
     Outputs:
         pi_better : vector (num_states,) of actions representing a new policy obtained via policy iteration
     '''
-    states = np.arange(env.num_states)
-    transition_matrix = env.T[states, :, :]
-    reward_matrix = env.R[states, :, :]
-    
-    V_for_each_action = einops.einsum(transition_matrix, reward_matrix + gamma * V, "s a s_prime, s a s_prime -> s a")
-    pi_better = V_for_each_action.argmax(-1)
+    action_to_value = einops.einsum(env.T, env.R+gamma*V, "s_1 a s_2, s_1 a s_2 -> s_1 a")
+    return np.argmax(action_to_value, axis=1)
 
-    return pi_better
 
-# Alternate solution:
+tests.test_policy_improvement(policy_improvement)
 
-def policy_improvement_2(env : Environment, V : Arr, gamma=0.99) -> Arr:
-    pi_new = np.argmax(np.einsum("ijk,ijk -> ij", env.T, env.R) + gamma * np.einsum("ijk,k -> ij", env.T, V), axis=1)
-    return pi_new
 
 # %%
-
 def find_optimal_policy(env: Environment, gamma=0.99, max_iterations=10_000):
     '''
     Inputs:
@@ -567,16 +564,16 @@ def find_optimal_policy(env: Environment, gamma=0.99, max_iterations=10_000):
         pi : (num_states,) int, of actions represeting an optimal policy
     '''
     pi = np.zeros(shape=env.num_states, dtype=int)
+    for iter in range(max_iterations):
+        value = policy_eval_exact(env, pi, gamma=gamma)
+        new_pi = policy_improvement(env, value, gamma=gamma)
+        if np.all(pi == new_pi):
+            return new_pi
+        pi = new_pi
 
-    for i in range(max_iterations):
-        V = policy_eval_exact(env, pi, gamma)
-        pi_new = policy_improvement(env, V, gamma)
-        if np.array_equal(pi_new, pi):
-            return pi_new
-        else:
-            pi = pi_new
-    else:
-        print(f"Failed to converge after {max_iterations} steps.")
-        return pi
+tests.test_find_optimal_policy(find_optimal_policy)
 
-# %%
+penalty = -0.04
+norvig = Norvig(penalty)
+pi_opt = find_optimal_policy(norvig, gamma=0.99)
+norvig.render(pi_opt)
